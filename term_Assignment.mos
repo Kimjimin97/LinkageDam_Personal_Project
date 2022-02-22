@@ -1,0 +1,134 @@
+model ModelName
+  options noimplicit
+  uses "mmxprs"
+
+  declarations
+
+  T = 1..12      ! 시간의 집합데이터
+  NODE = 1..12   ! 댐과 공급지 병합 노드 집합 데이터
+  ARCS = 1..11   ! 아크 집합 데이터
+  START=1..3      ! 댐의 시작 노드 집합 데이터
+  PROVIDE=1..3   ! 공급지 집합 데이터
+
+  PROVIDE_NODE ={10,12}  ! 공급지 노드 데이터
+  START_NODE = {1,4,9}      ! 댐의 시작 노드 데이터
+
+  FROM_NODE : array(ARCS) of integer ! 시작 노드 변수 선언
+  END_NODE : array(ARCS) of integer  !  끝 노드 변수 선언
+  aa,bb,cc,dd,ee,ff,gg,hh : integer
+
+  WATER_INPUT : array(T,NODE) of real  ! 댐의 유입이량 변수 선언
+  CONTAIN_CAPA : array(NODE) of real   ! 댐의 유효 저수량 변수 선언
+  OUT_CAPA : array(NODE) of real       ! 댐의 가능 방출량 변수 선언
+  NEED : array(1..3) of real           ! 공급량 변수 선언
+
+  move : array(T,ARCS) of mpvar         ! 이동 수량 의사결정 변수 선언
+  obtain_ti: array(T,NODE) of mpvar     ! 댐의 저수량 의사결정 변수 선언
+  lack_t : array(T) of mpvar            ! 공급량 차이 절대값 의사결정 변수 선언
+  lack_minus : array(T) of mpvar        ! 과잉 공급량 의사결정 변수 선언
+  lack_plus : array(T) of mpvar         !  부족 공급량 의사결정 변수 선언
+
+
+  contain_const : array(T,NODE) of linctr   ! 유효 저수량 만족 제약식 선언
+  out_capa_const : array(T,NODE) of linctr  ! 가능 방출량 만족 제약식 선언
+
+  miniMize : linctr                         ! 목적함수 선언
+
+  end-declarations
+
+
+  forall ( t in T, i in NODE)
+   WATER_INPUT(t,i):=0
+
+! 아크 데이터 불러오기
+  fopen("ARC.csv",F_INPUT)
+  readln
+  while(not iseof)
+   readln(aa,",",FROM_NODE(aa),",",END_NODE(aa))
+  fclose(F_INPUT)
+
+! 댐의 유효 저수량 데이터 불러오기
+  fopen("water_capa.csv",F_INPUT)
+  while(not iseof)
+   readln(bb,",",CONTAIN_CAPA(bb))
+  fclose(F_INPUT)
+
+! 댐의 유입이량 데이터 불러오기
+  fopen("water_input.csv",F_INPUT)
+  readln
+  while(not iseof)
+  readln(cc,",",WATER_INPUT(cc,1),",",WATER_INPUT(cc,9),",",WATER_INPUT(cc,4))
+
+!  필요 공급량 데이터 불러오기
+  fopen("water_use.csv",F_INPUT)
+  while(not iseof)
+  readln(dd,',',NEED(dd))
+
+! 댐의 가능 방출량 데이터 불러오기
+  fopen("water_out.csv",F_INPUT)
+  while(not iseof)
+  readln(ee,",",OUT_CAPA(ee))
+
+! 공급지의 유입제한을 없애기 위해 큰 수로 설정하였다
+  forall (i in [10,11,12])
+  CONTAIN_CAPA(i) := 9999999999
+
+! 부족량 절댓값 설정을 위해 is_free 선언
+  forall(t in T)
+  lack_t(t) is_free
+
+! 절댓값 계산
+  forall(t in T)
+  lack_t(t) = lack_plus(t) - lack_minus(t)
+
+
+ ! 시작 댐이 아닌 댐의 노드는 다른 노드에서의 유입량과 방출량의 차이로 설정
+  forall( t in T , i in NODE | i not in START_NODE)
+   obtain_ti(t,i) = sum(a in ARCS| END_NODE(a)=i) move(t,a) -sum(a in ARCS| FROM_NODE(a)=i) move(t,a)
+
+
+ ! 댐의 시작노드의 저수량은 유입량데이터의 유입량과 방출량의 차이로 설정
+  forall( t in T , i in START_NODE) do
+   hh:= i
+   obtain_ti(t,i) =  WATER_INPUT(t,hh) - sum(a in ARCS| FROM_NODE(a)=i) move(t,a)
+   end-do
+
+
+ ! 유효 저수량 만족 제약식
+  forall(t in T, i in NODE) contain_const(t,i) := obtain_ti(t,i) <= CONTAIN_CAPA(i)
+
+ ! 가능 방출량 만족 제약식
+  forall( t in T, i in NODE)
+   out_capa_const(t,i):= OUT_CAPA(i) >= sum( a in ARCS | FROM_NODE(a) = i) move(t,a)
+
+ ! 월별 공급지의 부족 공급량 계산식
+  forall( t in T)
+   lack_t(t) =  sum(i in 1..3) NEED(i) - sum( a in PROVIDE_NODE ) obtain_ti(t,a)
+
+ ! 1년간 부족 공급량의 합의 최소 목적함수 선언
+  miniMize := sum(t in T) lack_plus(t)
+
+  minimise(miniMize)
+
+  exportprob(EP_MIN,"prod_planning.lp",miniMize)
+ ! optimal 검사
+  writeln(getsol(obtain_ti(1,1)))
+  if (getprobstat = XPRS_OPT) then
+  writeln('opitmal!')
+  else
+  writeln('not optimal')
+  exit(1)
+  end-if
+  
+  writeln("MinCount:",getobjval)
+  
+  forall ( t in T, a in ARCS)
+  writeln(t,"month","    ","from",FROM_NODE(a),"   to",END_NODE(a)," :", getsol( move(t,a)))
+
+ forall ( t in T, i in NODE)
+  writeln(t,"month","    ",i," NODE_OBTAIN_WATER :",  getsol(obtain_ti(t,i)))
+
+ forall( t in T)
+  writeln(t,"month  lack:  ", getsol(lack_plus(t)))
+  
+end-model
